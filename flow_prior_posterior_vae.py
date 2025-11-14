@@ -289,7 +289,8 @@ class VAEFlowPosterior(nn.Module):
         x_hat = px.mean
         return x_hat
 
-    def sample(self, n, device=None, refine_steps=10, refine_lr=0.1):
+
+    def sample(self, n, device=None, refine_steps=10, refine_lr=0.1, lambda_=0.1):
         if device is None:
             device = next(self.parameters()).device
 
@@ -300,19 +301,22 @@ class VAEFlowPosterior(nn.Module):
             eps = torch.randn(n, self.latent_dim, device=device)
             z, _ = self.prior_flow(eps, conditioning=None)
 
-        # Refine z with gradient ascent on likelihood under the prior, anchored to z
-        z = z.detach().clone()
+        z0 = z.detach().clone()
+        z = z0.clone()
         z.requires_grad_(True)
+        # This is where you would add a reward model that is trained on z's, and gradient ascent to better samples under the rewards.
         for _ in range(refine_steps):
-            # likelihood under the prior: p(z) (standard normal or with prior_flow)
             if self.prior_flow is None:
-                log_prob = -0.5 * ((z ** 2).sum(-1) + z.shape[-1] * np.log(2 * np.pi))
+                log_p = -0.5 * (z ** 2).sum(-1)
             else:
-                # Map z back to eps, compute base prior log_prob and adjust by log-det
                 eps, log_det = self.prior_flow.inverse(z, conditioning=None)
-                log_p_eps = -0.5 * ((eps ** 2).sum(-1) + z.shape[-1] * np.log(2 * np.pi))
-                log_prob = log_p_eps + log_det
-            grad = torch.autograd.grad(log_prob.mean(), z, create_graph=False)[0]
+                log_p_eps = -0.5 * (eps ** 2).sum(-1)
+                log_p = log_p_eps + log_det
+
+            anchor = -lambda_ * ((z - z0) ** 2).sum(-1)
+            obj = (log_p + anchor).mean()
+
+            grad = torch.autograd.grad(obj, z, create_graph=False)[0]
             z = z + refine_lr * grad
             z = z.detach()
             z.requires_grad_(True)
